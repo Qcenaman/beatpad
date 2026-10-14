@@ -1,0 +1,44 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build
+        run: gradle assembleRelease --stacktrace --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk BeatPad.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BeatPad-apk
+          path: BeatPad.apk
+
+      - name: Publish release (download this on your phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: BeatPad build ${{ github.run_number }}
+          make_latest: true
+          body: Open this page on your Android phone and tap BeatPad.apk to install.
+          files: BeatPad.apk
