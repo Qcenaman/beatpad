@@ -5,6 +5,7 @@ import com.beatpad.audio.AudioEngine
 import com.beatpad.audio.Instrument
 import com.beatpad.audio.NoteTrack
 import com.beatpad.audio.SeqNote
+import com.beatpad.audio.SynthPatch
 import com.beatpad.audio.Wav
 import org.json.JSONArray
 import org.json.JSONObject
@@ -14,11 +15,24 @@ import java.io.File
 class Storage(ctx: Context) {
     private val dir = File(ctx.filesDir, "kit").apply { mkdirs() }
     private val stateFile = File(dir, "state.json")
+    private val presetFile = File(dir, "synth_presets.json")
     private val prefs = ctx.getSharedPreferences("beatpad", Context.MODE_PRIVATE)
 
     var seenHelp: Boolean
         get() = prefs.getBoolean("seenHelp", false)
         set(v) = prefs.edit().putBoolean("seenHelp", v).apply()
+
+    var layoutLocked: Boolean
+        get() = prefs.getBoolean("layoutLocked", true)
+        set(v) = prefs.edit().putBoolean("layoutLocked", v).apply()
+
+    fun loadLayout(screen: String): String? = prefs.getString("layout_$screen", null)
+
+    fun saveLayout(screen: String, json: String?) {
+        val e = prefs.edit()
+        if (json == null) e.remove("layout_$screen") else e.putString("layout_$screen", json)
+        e.apply()
+    }
 
     fun saveSample(i: Int, d: FloatArray) = Wav.write(File(dir, "pad_$i.wav"), d)
 
@@ -54,6 +68,7 @@ class Storage(ctx: Context) {
             val notes = JSONArray()
             for (n in t.notes) notes.put(JSONArray().put(n.start).put(n.len).put(n.midi))
             tracks.put(JSONObject().apply {
+                t.patch?.let { put("patch", it.toJson()) }
                 put("inst", t.instrument?.name ?: "")
                 put("pad", t.padSource)
                 put("vol", t.volume.toDouble())
@@ -99,6 +114,7 @@ class Storage(ctx: Context) {
                     t.volume = to.optDouble("vol", 0.7).toFloat()
                     t.bars = to.optInt("bars", 1).coerceIn(1, 8)
                     t.muted = to.optBoolean("muted", false)
+                    t.patch = to.optJSONObject("patch")?.let { SynthPatch.fromJson(it) }
                     val ns = to.optJSONArray("notes") ?: JSONArray()
                     val notes = ArrayList<SeqNote>()
                     for (k in 0 until ns.length()) {
@@ -121,6 +137,24 @@ class Storage(ctx: Context) {
         } catch (ex: Exception) {
             false
         }
+    }
+
+    fun loadUserPresets(): List<SynthPatch> = try {
+        if (!presetFile.exists()) emptyList() else {
+            val a = JSONArray(presetFile.readText())
+            (0 until a.length()).map { SynthPatch.fromJson(a.getJSONObject(it)).copy(category = "Mine") }
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    @Synchronized
+    fun saveUserPresets(list: List<SynthPatch>) {
+        val a = JSONArray()
+        for (p in list) a.put(p.toJson())
+        val tmp = File(dir, "synth_presets.json.tmp")
+        tmp.writeText(a.toString())
+        tmp.renameTo(presetFile)
     }
 
     companion object {

@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity(), Actions {
     override fun onStop() {
         super.onStop()
         vm.engine.active = false
+        vm.engine.allLiveOff()
         vm.saveState()
     }
 

@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -23,10 +24,14 @@ import com.beatpad.audio.RecordingHub
 import com.beatpad.audio.SR
 import com.beatpad.audio.SampleOps
 import com.beatpad.audio.SeqNote
+import com.beatpad.audio.SynthPatch
+import com.beatpad.audio.SynthPresets
 import com.beatpad.audio.Wav
 import com.beatpad.voice.Beatbox
 import com.beatpad.voice.Melody
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -60,7 +65,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var selectedNoteId by mutableStateOf<Int?>(null)
     var noteLen by mutableIntStateOf(4)
     var playPos by mutableLongStateOf(-1L)
-    var rollExpanded by mutableStateOf(false)
+
+    // Screen layouts (movable / resizable sections)
+    var layoutLocked by mutableStateOf(true)
+    val layouts = mutableStateMapOf<String, PanelLayout>()
+
+    init {
+        layoutLocked = storage.layoutLocked
+        for (screen in PanelLayout.SCREENS) {
+            storage.loadLayout(screen)?.let { PanelLayout.fromJson(it) }?.let { layouts[screen] = it }
+        }
+    }
+
+    // Synth
+    var synthRev by mutableIntStateOf(0)
+    var userPresets by mutableStateOf<List<SynthPatch>>(emptyList())
+    var kbOctave by mutableIntStateOf(3)
+    private var saveJob: Job? = null
 
     var recTarget: RecTarget? = null
     private var lastLiveRev = 0
@@ -88,6 +109,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 engine.pads[i].choke = DrumSynth.chokes[i]
             }
             storage.loadState(engine)
+            val mine = storage.loadUserPresets()
             for (i in 0 until 16) {
                 engine.pads[i].sample = storage.loadSample(i) ?: DrumSynth.make(i)
             }
@@ -97,6 +119,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 padRev++
                 patternRev++
                 noteRev++
+                userPresets = mine
                 ready = true
             }
         }
@@ -116,6 +139,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (s != playStep) playStep = s
         val pp = engine.playPos
         if (pp != playPos) playPos = pp
+        var recorded = false
+        while (true) {
+            val r = engine.recordedNotes.poll() ?: break
+            val t = engine.noteTracks.getOrNull(r[0]) ?: continue
+            t.notes = t.notes + SeqNote(SeqNote.newId(), r[1], r[2], r[3])
+            recorded = true
+        }
+        if (recorded) {
+            noteRev++
+            saveSoon()
+        }
         val lr = engine.liveRev
         if (lr != lastLiveRev) {
             lastLiveRev = lr
@@ -125,6 +159,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toast(msg: String) {
         message = msg
+    }
+
+    // ---------- layouts ----------
+    /** The screen's layout, with any sections that are new (or gone) since it was saved fixed up. */
+    fun layoutFor(screen: String, ids: List<String>): PanelLayout {
+        val base = layouts[screen] ?: PanelLayout(order = ids)
+        val order = base.order.filter { it in ids } + ids.filter { it !in base.order }
+        return if (order == base.order) base else base.copy(order = order)
+    }
+
+    private fun putLayout(screen: String, l: PanelLayout) {
+        layouts[screen] = l
+        storage.saveLayout(screen, l.toJson())
+    }
+
+    fun movePanel(screen: String, ids: List<String>, id: String, to: Int) {
+        val l = layoutFor(screen, ids)
+        val ord = l.order.toMutableList()
+        val from = ord.indexOf(id)
+        if (from < 0) return
+        ord.removeAt(from)
+        ord.add(to.coerceIn(0, ord.size), id)
+        putLayout(screen, l.copy(order = ord))
+    }
+
+    fun setPanelHeight(screen: String, ids: List<String>, id: String, dp: Float) {
+        val l = layoutFor(screen, ids)
+        putLayout(screen, l.copy(heights = l.heights + (id to dp)))
+    }
+
+    fun setCollapsed(screen: String, ids: List<String>, id: String, collapsed: Boolean) {
+        val l = layoutFor(screen, ids)
+        putLayout(screen, l.copy(collapsed = if (collapsed) l.collapsed + id else l.collapsed - id))
+    }
+
+    fun collapseAll(screen: String, ids: List<String>, collapsed: Boolean) {
+        val l = layoutFor(screen, ids)
+        putLayout(screen, l.copy(collapsed = if (collapsed) ids.toSet() else emptySet()))
+    }
+
+    fun resetLayout(screen: String) {
+        layouts.remove(screen)
+        storage.saveLayout(screen, null)
+    }
+
+    fun toggleLayoutLock() {
+        layoutLocked = !layoutLocked
+        storage.layoutLocked = layoutLocked
     }
 
     /** True the first time the app is opened, so the UI can point at the Help tab once. */
@@ -176,6 +258,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setTrackInstrument(inst: Instrument?) {
+        track.patch = null
         track.instrument = inst
         noteRev++
         saveState()
@@ -183,6 +266,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTrackPad(p: Int) {
         track.padSource = p
+        track.patch = null
         track.instrument = null
         noteRev++
         saveState()
@@ -214,6 +298,69 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun previewNote(midi: Int) {
         engine.previewNote(selectedTrack, midi)
+    }
+
+    /** Saves a moment after the last change, so dragging a slider doesn't write the file 60 times a second. */
+    fun saveSoon() {
+        saveJob?.cancel()
+        saveJob = viewModelScope.launch {
+            delay(700)
+            saveState()
+        }
+    }
+
+    // ---------- synth ----------
+    /** Makes the selected note track a synth with this sound (a copy, so edits don't change the preset). */
+    fun loadPreset(p: SynthPatch) {
+        track.patch = p.copy()
+        synthRev++
+        noteRev++
+        saveState()
+        engine.previewNote(selectedTrack, if (p.category == "Bass") 36 else 60)
+    }
+
+    fun updatePatch(change: (SynthPatch) -> SynthPatch) {
+        val p = track.patch ?: return
+        track.patch = change(p)
+        synthRev++
+        saveSoon()
+    }
+
+    fun saveUserPreset(name: String) {
+        val p = track.patch ?: return
+        val clean = name.trim().take(24).ifEmpty { "My sound" }
+        val np = p.copy(name = clean, category = "Mine")
+        track.patch = np
+        userPresets = userPresets.filter { it.name != clean } + np
+        val list = userPresets
+        viewModelScope.launch(Dispatchers.IO) { try { storage.saveUserPresets(list) } catch (_: Exception) {} }
+        synthRev++
+        noteRev++
+        saveState()
+        toast("Saved \"$clean\" to your presets")
+    }
+
+    fun deleteUserPreset(p: SynthPatch) {
+        userPresets = userPresets.filter { it.name != p.name }
+        val list = userPresets
+        viewModelScope.launch(Dispatchers.IO) { try { storage.saveUserPresets(list) } catch (_: Exception) {} }
+    }
+
+    fun liveNoteOn(midi: Int) = engine.liveNoteOn(selectedTrack, midi)
+    fun liveNoteOff(track: Int, midi: Int) = engine.liveNoteOff(track, midi)
+
+    /** Renders one note of the selected track's synth sound onto a pad. */
+    fun synthToPad(pad: Int, midi: Int, lenSteps: Int) {
+        val patch = track.patch ?: return
+        busy = "Making the pad sound…"
+        viewModelScope.launch(Dispatchers.Default) {
+            val d = SampleOps.normalize(SampleOps.autoTrim(engine.renderPatchNote(patch, midi, lenSteps)), 0.9f)
+            withContext(Dispatchers.Main) {
+                busy = null
+                setPadSample(pad, d, patch.name.take(16))
+                toast("${patch.name} is on pad ${pad + 1}")
+            }
+        }
     }
 
     fun addNote(start: Int, midi: Int) {
@@ -570,6 +717,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val needed = seq.maxOf { it.start + 1 }
         val bars = listOf(1, 2, 4, 8).firstOrNull { it * 16 >= needed } ?: 8
         val t = track
+        t.patch = null
         t.instrument = melInstrument
         t.bars = bars
         t.notes = seq.filter { it.start < bars * 16 }

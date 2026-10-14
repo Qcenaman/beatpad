@@ -11,11 +11,12 @@ data class SeqNote(val id: Int, val start: Int, val len: Int, val midi: Int) {
 }
 
 /**
- * A melodic track: notes with pitch and length, played by an instrument
- * or by a pad's sample at different pitches. The notes list is replaced, never mutated,
+ * A melodic track: notes with pitch and length, played by a synth sound, a simple instrument
+ * or a pad's sample at different pitches (checked in that order). The notes list is replaced, never mutated,
  * so the audio thread always sees a consistent copy.
  */
 class NoteTrack {
+    @Volatile var patch: SynthPatch? = null                  // set = this track is a synth (Synth tab)
     @Volatile var instrument: Instrument? = Instrument.KEYS   // null = use a pad's sample
     @Volatile var padSource = 0
     @Volatile var volume = 0.7f

@@ -22,6 +22,8 @@ Every push to `main` builds a new APK automatically (see the Actions tab).
 - **Beatbox → Drums**: detects kicks, snares, hats and open hats in your beatbox, guesses your tempo, and writes the pattern; or keeps your exact timing as a loop; or uses your own voice sounds
 - **Hum → Instrument**: tracks the pitch of your humming and replays it as Bass, Keys, Synth, Pluck, Pad or Bell
 - **Note track** under the pads (v1.1): a piano roll where you tap to add notes, drag to move them, drag the right end to change length, and pick lengths from 1/16 to 1 bar. Up to 4 tracks, each played by an instrument (Bass, Keys, Synth, Pluck, Pad, Bell) or by a pad's sample at any pitch, with 1–8 bar loops, volume and mute
+- **Synth tab** (v1.2): turn any note track into a synthesizer. Two oscillators (sine, triangle, saw, square) plus sub and noise, resonant low/high/band-pass filter with its own envelope, volume envelope, LFO (pitch, filter or volume), mono mode with glide, and drive, tempo-synced delay and reverb. 15 presets, save your own, play a multi-touch keyboard, record what you play into the note track with REC, or render a note onto a pad
+- **Arrange every screen** (v1.2): each screen is made of sections you can jump to, fold, move and resize, with a lock so nothing moves while you play
 - **Hum → note track**: send a hummed melody to a note track and fix it note by note
 - **Help tab**: simple, sectioned guide to everything in the app
 - **Export** 1–8 bars (drums + note tracks) as a WAV file

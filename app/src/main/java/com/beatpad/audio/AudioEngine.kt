@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Process
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -18,7 +19,7 @@ class Pad(@Volatile var sample: FloatArray, @Volatile var name: String) {
 
 /**
  * Low-latency mixer + sample-accurate sequencer (drum pattern and note tracks)
- * running on its own audio thread.
+ * running on its own audio thread. Note tracks each have an effects bus for synth sounds.
  */
 class AudioEngine {
     val pads = Array(16) { Pad(FloatArray(0), "") }
@@ -35,15 +36,22 @@ class AudioEngine {
     @Volatile var playPos = -1L       // steps since play was pressed (for note tracks)
     @Volatile var liveRev = 0         // bumps when live recording changes the pattern
 
+    /** Notes recorded from the keyboard: [track, start step, length, midi]. Read by the UI. */
+    val recordedNotes = ConcurrentLinkedQueue<IntArray>()
+
     private val triggers = ConcurrentLinkedQueue<Int>()
     private val oneShots = ConcurrentLinkedQueue<FloatArray>()
     private val previews = ConcurrentLinkedQueue<IntArray>()
+    private val liveEvents = ConcurrentLinkedQueue<IntArray>()
 
     private class Voice {
+        var kind = KIND_DATA
         var pad = -1
         var data: FloatArray? = null
         val synth = SynthVoice()
-        var isSynth = false
+        val patch = PatchVoice()
+        var bus = -1                 // note track index, or -1 for the main mix
+        var live = -1                // midi note of a held keyboard key, -1 if not live
         var pos = 0.0
         var rate = 1.0
         var gain = 0f
@@ -58,6 +66,23 @@ class AudioEngine {
     private val clickHi = DrumSynth.click(true)
     private val clickLo = DrumSynth.click(false)
 
+    // per-track effect buses
+    private val busIn = FloatArray(MAX_BUS)
+    private val busPatch = arrayOfNulls<SynthPatch>(MAX_BUS)
+    private val busDelay = IntArray(MAX_BUS)
+    private val fx = Array(MAX_BUS) { FxChain() }
+    private val lastMonoPitch = DoubleArray(MAX_BUS) { -1.0 }
+
+    // live keyboard state
+    private val held = Array(MAX_BUS) { IntArray(16) }
+    private val heldCount = IntArray(MAX_BUS)
+    private val recStart = Array(MAX_BUS) { DoubleArray(128) { -1.0 } }
+    private val supTrack = IntArray(32)
+    private val supPos = IntArray(32)
+    private val supMidi = IntArray(32)
+    private val supStep = LongArray(32)
+    private var supCount = 0
+
     @Volatile private var running = false
     private var thread: Thread? = null
 
@@ -68,6 +93,7 @@ class AudioEngine {
     private var nextFire = 0.0
     private var nextStep = 0
     private var globalStep = 0L
+    private var lastGlobalFired = 0L
     private var lastFireTime = 0.0
     private var lastStep = 0
     private val suppress = IntArray(16) { -1 }
@@ -98,6 +124,19 @@ class AudioEngine {
     /** Plays a short note on a note track (for auditioning while editing). */
     fun previewNote(track: Int, midi: Int) {
         previews.add(intArrayOf(track, midi))
+    }
+
+    /** Keyboard key pressed: the note sounds until [liveNoteOff]. */
+    fun liveNoteOn(track: Int, midi: Int) {
+        liveEvents.add(intArrayOf(1, track, midi))
+    }
+
+    fun liveNoteOff(track: Int, midi: Int) {
+        liveEvents.add(intArrayOf(0, track, midi))
+    }
+
+    fun allLiveOff() {
+        liveEvents.add(intArrayOf(2, -1, -1))
     }
 
     private fun loop() {
@@ -156,8 +195,30 @@ class AudioEngine {
         while (true) {
             val pv = previews.poll() ?: break
             val tr = noteTracks.getOrNull(pv[0]) ?: continue
-            startNote(tr, pv[1], (SR * 0.35).toLong())
+            startNote(pv[0], tr, pv[1], (SR * 0.35).toLong(), false)
         }
+        while (true) {
+            val e = liveEvents.poll() ?: break
+            when (e[0]) {
+                1 -> liveOn(e[1], e[2])
+                0 -> liveOff(e[1], e[2])
+                else -> {
+                    for (v in voices) if (v.active && v.live >= 0) {
+                        v.live = -1
+                        v.gate = 1
+                    }
+                    heldCount.fill(0)
+                }
+            }
+        }
+        val tracks = noteTracks
+        val spbNow = SR * 60.0 / bpm / 4
+        for (b in 0 until MAX_BUS) {
+            val bp = tracks.getOrNull(b)?.patch
+            busPatch[b] = bp
+            if (bp != null) busDelay[b] = (DELAY_STEPS[bp.delayTime.coerceIn(0, DELAY_STEPS.size - 1)] * spbNow).toInt()
+        }
+
         for (i in 0 until n) {
             if (playing) {
                 if (!wasPlaying) {
@@ -166,6 +227,7 @@ class AudioEngine {
                     nextFire = gridTime
                     nextStep = 0
                     globalStep = 0
+                    supCount = 0
                 }
                 if (clock >= nextFire) fireStep()
             } else if (wasPlaying) {
@@ -173,12 +235,16 @@ class AudioEngine {
                 playStep = -1
                 playPos = -1
                 releaseNotes()
+                for (row in recStart) row.fill(-1.0)
             }
             var s = 0f
             for (v in voices) {
                 if (!v.active) continue
                 val x: Float
-                if (v.isSynth) {
+                if (v.kind == KIND_PATCH) {
+                    x = v.patch.next()
+                    if (v.patch.done) v.active = false
+                } else if (v.kind == KIND_SYNTH) {
                     x = v.synth.next()
                     if (v.synth.done) v.active = false
                 } else {
@@ -191,13 +257,13 @@ class AudioEngine {
                     x = d[ip] + (d[ip + 1] - d[ip]) * fr
                     v.pos += v.rate
                 }
-                s += x * v.gain * v.fade
+                val y = x * v.gain * v.fade
+                if (v.bus >= 0) busIn[v.bus] += y else s += y
                 if (v.gate > 0) {
                     v.gate--
                     if (v.gate == 0L) {
                         v.gate = -1
-                        if (v.isSynth) v.synth.release()
-                        else if (v.fadeStep == 0f) v.fadeStep = 1f / (SR * 0.012f)
+                        noteOff(v)
                     }
                 }
                 if (v.fadeStep > 0f) {
@@ -205,9 +271,23 @@ class AudioEngine {
                     if (v.fade <= 0f) v.active = false
                 }
             }
+            for (b in 0 until MAX_BUS) {
+                val inp = busIn[b]
+                busIn[b] = 0f
+                val bp = busPatch[b]
+                s += if (bp != null) fx[b].process(inp, bp, busDelay[b]) else inp
+            }
             s *= 0.9f
             out[i] = if (s > 0.95f || s < -0.95f) tanh(s) else s
             clock++
+        }
+    }
+
+    private fun noteOff(v: Voice) {
+        when (v.kind) {
+            KIND_PATCH -> v.patch.release()
+            KIND_SYNTH -> v.synth.release()
+            else -> if (v.fadeStep == 0f) v.fadeStep = 1f / (SR * 0.012f)
         }
     }
 
@@ -216,6 +296,7 @@ class AudioEngine {
         val step = nextStep
         lastFireTime = nextFire
         lastStep = step
+        lastGlobalFired = globalStep
         playStep = step
         playPos = globalStep
         for (p in 0 until 16) {
@@ -231,14 +312,32 @@ class AudioEngine {
             val ns = tr.notes
             for (k in ns.indices) {
                 val note = ns[k]
-                if (note.start == pos) startNote(tr, note.midi, (note.len * spb).toLong())
+                if (note.start != pos) continue
+                if (isSuppressed(ti, pos, note.midi)) continue
+                startNote(ti, tr, note.midi, (note.len * spb).toLong(), false)
             }
+        }
+        // forget suppressions for steps that have passed
+        var k = 0
+        while (k < supCount) {
+            if (supStep[k] <= globalStep) {
+                supCount--
+                supTrack[k] = supTrack[supCount]; supPos[k] = supPos[supCount]
+                supMidi[k] = supMidi[supCount]; supStep[k] = supStep[supCount]
+            } else k++
         }
         if (metronome && step % 4 == 0) startData(-1, if (step == 0) clickHi else clickLo, 1.0, 0.6f)
         globalStep++
         gridTime += spb
         nextStep = (step + 1) % STEPS
         nextFire = gridTime + if (nextStep % 2 == 1) swing * spb else 0.0
+    }
+
+    private fun isSuppressed(ti: Int, pos: Int, midi: Int): Boolean {
+        for (k in 0 until supCount) {
+            if (supStep[k] == globalStep && supTrack[k] == ti && supPos[k] == pos && supMidi[k] == midi) return true
+        }
+        return false
     }
 
     private fun recordHit(p: Int) {
@@ -254,10 +353,76 @@ class AudioEngine {
         liveRev++
     }
 
+    /** Where playback is right now, in steps since play was pressed (with fractions). */
+    private fun posNow(): Double {
+        val spb = SR * 60.0 / bpm / 4
+        return lastGlobalFired + (clock - lastFireTime) / spb
+    }
+
+    private fun liveOn(ti: Int, midi: Int) {
+        val tr = noteTracks.getOrNull(ti) ?: return
+        if (ti !in 0 until MAX_BUS || midi !in 0 until 128) return
+        if (heldCount[ti] < held[ti].size) {
+            held[ti][heldCount[ti]] = midi
+            heldCount[ti]++
+        }
+        if (recArm && playing && wasPlaying) recStart[ti][midi] = posNow()
+        startNote(ti, tr, midi, GATE_HOLD, true)
+    }
+
+    private fun liveOff(ti: Int, midi: Int) {
+        if (ti !in 0 until MAX_BUS || midi !in 0 until 128) return
+        // remove from the held-keys list
+        val h = held[ti]
+        var c = heldCount[ti]
+        var k = 0
+        while (k < c) {
+            if (h[k] == midi) {
+                for (j in k until c - 1) h[j] = h[j + 1]
+                c--
+            } else k++
+        }
+        heldCount[ti] = c
+        // finish a recorded note
+        val st = recStart[ti][midi]
+        val tr = noteTracks.getOrNull(ti)
+        if (st >= 0 && tr != null) {
+            recStart[ti][midi] = -1.0
+            val startStep = Math.round(st)
+            val len = Math.round(posNow() - st).toInt().coerceIn(1, tr.steps)
+            val pos = (startStep % tr.steps).toInt()
+            recordedNotes.add(intArrayOf(ti, pos, len, midi))
+            if (startStep > lastGlobalFired && supCount < supStep.size) {
+                supTrack[supCount] = ti; supPos[supCount] = pos; supMidi[supCount] = midi; supStep[supCount] = startStep
+                supCount++
+            }
+        }
+        // mono synth: fall back to the last key still held
+        val patch = tr?.patch
+        if (patch != null && patch.mono && c > 0) {
+            val back = h[c - 1]
+            for (v in voices) {
+                if (v.active && v.kind == KIND_PATCH && v.bus == ti && v.live == midi) {
+                    v.patch.glideTo(back, false)
+                    v.live = back
+                }
+            }
+            return
+        }
+        for (v in voices) {
+            if (v.active && v.bus == ti && v.live == midi) {
+                v.live = -1
+                v.gate = 1
+            }
+        }
+    }
+
     private fun grabVoice(): Voice {
         var v = voices.firstOrNull { !it.active }
         if (v == null) v = voices.minByOrNull { it.age }!!
         v.pad = -1
+        v.bus = -1
+        v.live = -1
         v.fade = 1f
         v.fadeStep = 0f
         v.gate = -1
@@ -282,8 +447,8 @@ class AudioEngine {
 
     private fun startData(p: Int, d: FloatArray, rate: Double, gain: Float) {
         val v = grabVoice()
+        v.kind = KIND_DATA
         v.pad = p
-        v.isSynth = false
         v.data = d
         v.pos = 0.0
         v.rate = rate
@@ -291,40 +456,95 @@ class AudioEngine {
         v.active = true
     }
 
-    private fun startNote(tr: NoteTrack, midi: Int, lenSamples: Long) {
+    private fun startNote(ti: Int, tr: NoteTrack, midi: Int, lenSamples: Long, live: Boolean) {
+        val bus = if (ti in 0 until MAX_BUS) ti else -1
+        val gate = max(1L, lenSamples)
+        val patch = tr.patch
         val inst = tr.instrument
-        if (inst == null) {
+        if (patch != null) {
+            if (patch.mono) {
+                var mv: Voice? = null
+                for (v in voices) {
+                    if (v.active && v.kind == KIND_PATCH && v.bus == bus && (mv == null || v.age > mv.age)) mv = v
+                }
+                if (mv != null) {
+                    mv.patch.glideTo(midi, mv.patch.released)
+                    mv.gate = gate
+                    mv.live = if (live) midi else -1
+                    mv.age = clock
+                    mv.fade = 1f
+                    mv.fadeStep = 0f
+                    if (bus >= 0) lastMonoPitch[bus] = midi.toDouble()
+                    return
+                }
+            }
+            val v = grabVoice()
+            v.kind = KIND_PATCH
+            v.data = null
+            v.patch.track = tr
+            val from = if (patch.mono && patch.glide > 0.002f && bus >= 0) lastMonoPitch[bus] else -1.0
+            v.patch.start(patch, midi, from)
+            if (bus >= 0) lastMonoPitch[bus] = midi.toDouble()
+            v.gain = tr.volume
+            v.bus = bus
+            v.live = if (live) midi else -1
+            v.gate = gate
+            v.active = true
+        } else if (inst != null) {
+            val v = grabVoice()
+            v.kind = KIND_SYNTH
+            v.data = null
+            v.synth.start(inst, midiHz(midi))
+            v.gain = tr.volume
+            v.bus = bus
+            v.live = if (live) midi else -1
+            v.gate = gate
+            v.active = true
+        } else {
             val pad = pads[tr.padSource.coerceIn(0, 15)]
             val d = pad.sample
             if (d.size < 2) return
             val v = grabVoice()
-            v.isSynth = false
+            v.kind = KIND_DATA
             v.data = d
             v.pos = 0.0
             v.rate = 2.0.pow((midi - NoteTrack.SAMPLE_ROOT + pad.pitch) / 12.0)
             v.gain = tr.volume * pad.volume
-            v.gate = max(1L, lenSamples)
-            v.active = true
-        } else {
-            val v = grabVoice()
-            v.isSynth = true
-            v.data = null
-            v.synth.start(inst, midiHz(midi))
-            v.gain = tr.volume
-            v.gate = max(1L, lenSamples)
+            v.bus = bus
+            v.live = if (live) midi else -1
+            v.gate = gate
             v.active = true
         }
     }
 
-    /** Lets held notes ring out when playback stops. */
+    /** Lets sequenced notes ring out when playback stops (keys you're holding keep sounding). */
     private fun releaseNotes() {
         for (v in voices) {
-            if (v.active && v.gate > 0) v.gate = 1
+            if (v.active && v.gate > 0 && v.live < 0) v.gate = 1
         }
     }
 
     fun clearPattern() {
         for (row in pattern) row.fill(false)
+    }
+
+    /** Renders one held note of a synth sound (with its effects tail), e.g. to put on a pad. */
+    fun renderPatchNote(patch: SynthPatch, midi: Int, lenSteps: Int): FloatArray {
+        val spb = SR * 60.0 / bpm / 4
+        val gate = (lenSteps * spb).toInt()
+        val fxTail = if (patch.delayMix > 0.001f || patch.reverbMix > 0.001f) SR * 3 else 0
+        val total = gate + (patch.ampR * SR * 1.5f).toInt() + fxTail + SR / 10
+        val buf = FloatArray(total)
+        val pv = PatchVoice()
+        pv.start(patch, midi)
+        val chain = FxChain()
+        val ds = FxChain.delaySamples(patch, bpm)
+        for (j in 0 until total) {
+            if (j == gate) pv.release()
+            val x = if (pv.done) 0f else pv.next()
+            buf[j] = chain.process(x, patch, ds)
+        }
+        return buf
     }
 
     /** Offline render of the drum pattern and note tracks for export. */
@@ -342,7 +562,7 @@ class AudioEngine {
         val longestNote = tracks.flatMap { it.notes }.maxOfOrNull { it.len } ?: 0
         val loopLen = (spb * STEPS * bars).toInt()
         var total = loopLen
-        val out = FloatArray(loopLen + (longestNote * spb).toInt() + SR * 3)
+        val out = FloatArray(loopLen + (longestNote * spb).toInt() + SR * 4)
 
         for ((idx, e) in events.withIndex()) {
             val pad = pads[e.pad]
@@ -364,28 +584,42 @@ class AudioEngine {
         val sv = SynthVoice()
         for (tr in tracks) {
             val inst = tr.instrument
+            val patch = tr.patch
+            // [time, length in samples, midi], in time order
+            val evs = ArrayList<IntArray>()
             for (g in 0 until bars * STEPS) {
                 val pos = g % tr.steps
-                for (n in tr.notes) {
-                    if (n.start != pos) continue
-                    val t = stepTime(g)
-                    val len = (n.len * spb).toInt()
-                    if (inst != null) {
-                        sv.start(inst, midiHz(n.midi))
-                        var j = t
-                        var k = 0
-                        while (!sv.done && j < out.size) {
-                            if (k == len) sv.release()
-                            out[j] += sv.next() * tr.volume
-                            j++; k++
-                        }
-                        total = max(total, j)
-                    } else {
-                        val pad = pads[tr.padSource.coerceIn(0, 15)]
-                        val rate = 2.0.pow((n.midi - NoteTrack.SAMPLE_ROOT + pad.pitch) / 12.0)
-                        val end = min(out.size, t + min(len + SR * 12 / 1000, (pad.sample.size / rate).toInt()))
-                        total = max(total, mixSample(out, pad.sample, t, end, rate, pad.volume * tr.volume))
+                for (n in tr.notes) if (n.start == pos) evs.add(intArrayOf(stepTime(g), (n.len * spb).toInt(), n.midi))
+            }
+            if (patch != null) {
+                val wet = renderPatchTrack(patch, evs, out.size, tr.volume)
+                val chain = FxChain()
+                val ds = FxChain.delaySamples(patch, bpm)
+                var lastSound = 0
+                for (j in wet.indices) {
+                    val y = chain.process(wet[j], patch, ds)
+                    out[j] += y
+                    if (abs(y) > 1e-4f) lastSound = j
+                }
+                total = max(total, lastSound + 1)
+            } else if (inst != null) {
+                for (e in evs) {
+                    sv.start(inst, midiHz(e[2]))
+                    var j = e[0]
+                    var k = 0
+                    while (!sv.done && j < out.size) {
+                        if (k == e[1]) sv.release()
+                        out[j] += sv.next() * tr.volume
+                        j++; k++
                     }
+                    total = max(total, j)
+                }
+            } else {
+                val pad = pads[tr.padSource.coerceIn(0, 15)]
+                for (e in evs) {
+                    val rate = 2.0.pow((e[2] - NoteTrack.SAMPLE_ROOT + pad.pitch) / 12.0)
+                    val end = min(out.size, e[0] + min(e[1] + SR * 12 / 1000, (pad.sample.size / rate).toInt()))
+                    total = max(total, mixSample(out, pad.sample, e[0], end, rate, pad.volume * tr.volume))
                 }
             }
         }
@@ -393,6 +627,51 @@ class AudioEngine {
             val s = out[it] * 0.9f
             if (s > 0.95f || s < -0.95f) tanh(s) else s
         }
+    }
+
+    /** Plays a list of note events through a synth sound, the same way the live engine does (incl. mono glide). */
+    private fun renderPatchTrack(patch: SynthPatch, evs: List<IntArray>, length: Int, volume: Float): FloatArray {
+        val outT = FloatArray(length)
+        val pool = Array(16) { PatchVoice() }
+        val gates = LongArray(16)
+        val ages = LongArray(16)
+        var ei = 0
+        var lastPitch = -1.0
+        for (j in 0 until length) {
+            while (ei < evs.size && evs[ei][0] <= j) {
+                val e = evs[ei]
+                ei++
+                if (patch.mono) {
+                    val v = pool[0]
+                    if (!v.done) v.glideTo(e[2], v.released)
+                    else v.start(patch, e[2], if (patch.glide > 0.002f) lastPitch else -1.0)
+                    gates[0] = max(1, e[1]).toLong()
+                    lastPitch = e[2].toDouble()
+                } else {
+                    var k = -1
+                    for (q in pool.indices) if (pool[q].done) { k = q; break }
+                    if (k < 0) {
+                        k = 0
+                        for (q in pool.indices) if (ages[q] < ages[k]) k = q
+                    }
+                    pool[k].start(patch, e[2])
+                    gates[k] = max(1, e[1]).toLong()
+                    ages[k] = j.toLong()
+                }
+            }
+            var s = 0f
+            for (k in pool.indices) {
+                val v = pool[k]
+                if (v.done) continue
+                s += v.next()
+                if (gates[k] > 0) {
+                    gates[k]--
+                    if (gates[k] == 0L) v.release()
+                }
+            }
+            outT[j] = s * volume
+        }
+        return outT
     }
 
     private fun mixSample(out: FloatArray, d: FloatArray, start: Int, end: Int, rate: Double, gain: Float): Int {
@@ -415,5 +694,10 @@ class AudioEngine {
 
     companion object {
         const val STEPS = 16
+        const val MAX_BUS = 4
+        private const val KIND_DATA = 0
+        private const val KIND_SYNTH = 1
+        private const val KIND_PATCH = 2
+        private const val GATE_HOLD = Long.MAX_VALUE
     }
 }

@@ -56,6 +56,7 @@ import com.beatpad.MainViewModel
 import com.beatpad.Storage
 import com.beatpad.audio.Instrument
 import com.beatpad.audio.NoteTrack
+import com.beatpad.audio.SynthPresets
 import com.beatpad.audio.isBlackKey
 import com.beatpad.audio.noteName
 import kotlin.math.ceil
@@ -82,7 +83,7 @@ fun lenLabel(len: Int): String = when {
     else -> "$len/16"
 }
 
-fun trackLabel(t: NoteTrack): String = t.instrument?.label ?: "Pad ${t.padSource + 1}"
+fun trackLabel(t: NoteTrack): String = t.patch?.name ?: t.instrument?.label ?: "Pad ${t.padSource + 1}"
 
 @Composable
 fun SmallChip(
@@ -111,7 +112,7 @@ fun NoteTrackPanel(vm: MainViewModel, modifier: Modifier = Modifier) {
     val sel = vm.selectedNote
     var dialog by remember { mutableStateOf(false) }
 
-    Column(modifier.clip(RoundedCornerShape(14.dp)).background(Panel).padding(8.dp)) {
+    Column(modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             tracks.forEachIndexed { i, t ->
                 val on = i == ti
@@ -125,7 +126,6 @@ fun NoteTrackPanel(vm: MainViewModel, modifier: Modifier = Modifier) {
                 "♪ ${trackLabel(tr)}${if (tr.muted) " (muted)" else ""} ▾", PadOff, Modifier.weight(1f),
                 textColor = trackColor(ti)
             ) { dialog = true }
-            SmallChip(if (vm.rollExpanded) "Pads" else "Expand", PadOff) { vm.rollExpanded = !vm.rollExpanded }
         }
         Spacer(Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -156,7 +156,7 @@ fun NoteTrackPanel(vm: MainViewModel, modifier: Modifier = Modifier) {
                 }
             } else {
                 Text(
-                    if (tr.notes.isEmpty()) "Tap the grid to add a note. See Help › Note track."
+                    if (tr.notes.isEmpty()) "Tap the grid to add a note. Help › Note track explains more."
                     else "Tap a note to edit it. Drag it to move, drag its right end to resize.",
                     color = TextDim, fontSize = 12.sp, maxLines = 2
                 )
@@ -366,12 +366,22 @@ fun TrackDialog(vm: MainViewModel, onDismiss: () -> Unit) {
         title = { Text("Note track ${ti + 1}") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Instrument", color = Color.White, fontWeight = FontWeight.Bold)
+                val synthName = tr.patch?.name
+                Text("Synth", color = Color.White, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                SmallChip(
+                    if (synthName != null) "Synth · $synthName" else "Use a synth sound",
+                    if (synthName != null) color else PadOff, Modifier.fillMaxWidth(),
+                    textColor = if (synthName != null) Color.Black else Color.White
+                ) { if (tr.patch == null) vm.loadPreset(SynthPresets.all[0]) }
+                Text("Shape synth sounds and pick presets in the Synth tab.", color = TextDim, fontSize = 12.sp)
+                Spacer(Modifier.height(12.dp))
+                Text("Simple instruments", color = Color.White, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 for (row in Instrument.values().toList().chunked(3)) {
                     Row(Modifier.padding(vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (inst in row) {
-                            val on = tr.instrument == inst
+                            val on = tr.patch == null && tr.instrument == inst
                             SmallChip(
                                 inst.label, if (on) color else PadOff, Modifier.weight(1f),
                                 textColor = if (on) Color.Black else Color.White
@@ -386,7 +396,7 @@ fun TrackDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                 Text("Or play a pad's sound at any pitch", color = Color.White, fontWeight = FontWeight.Bold)
                 Text("The pad plays at its normal pitch on C4.", color = TextDim, fontSize = 12.sp)
                 Spacer(Modifier.height(6.dp))
-                PadPicker(if (tr.instrument == null) tr.padSource else -1) {
+                PadPicker(if (tr.patch == null && tr.instrument == null) tr.padSource else -1) {
                     vm.setTrackPad(it)
                     vm.previewNote(60)
                 }

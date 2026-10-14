@@ -72,6 +72,13 @@ val RowColors = listOf(Color(0xFFFF5A36), Color(0xFFFFB020), Color(0xFF3DD6C6), 
 
 fun padColor(i: Int) = RowColors[i / 4]
 
+const val TAB_PADS = 0
+const val TAB_STEPS = 1
+const val TAB_SYNTH = 2
+const val TAB_SAMPLE = 3
+const val TAB_VOICE = 4
+const val TAB_HELP = 5
+
 @Composable
 fun BeatPadApp(vm: MainViewModel, actions: Actions) {
     MaterialTheme(
@@ -101,7 +108,7 @@ fun BeatPadApp(vm: MainViewModel, actions: Actions) {
                     actionLabel = "Open Help",
                     duration = SnackbarDuration.Long
                 )
-                if (r == SnackbarResult.ActionPerformed) tab = 4
+                if (r == SnackbarResult.ActionPerformed) tab = TAB_HELP
             }
         }
         LaunchedEffect(vm.message) {
@@ -118,13 +125,16 @@ fun BeatPadApp(vm: MainViewModel, actions: Actions) {
             topBar = { TransportBar(vm) },
             bottomBar = {
                 NavigationBar(containerColor = Panel) {
-                    val items = listOf("Pads" to "▦", "Steps" to "☷", "Sample" to "∿", "Voice" to "◉", "Help" to "?")
+                    val items = listOf(
+                        "Pads" to "▦", "Steps" to "☷", "Synth" to "≈",
+                        "Sample" to "∿", "Voice" to "◉", "Help" to "?"
+                    )
                     items.forEachIndexed { i, (label, glyph) ->
                         NavigationBarItem(
                             selected = tab == i,
                             onClick = { tab = i },
                             icon = { Text(glyph, fontSize = 20.sp) },
-                            label = { Text(label) },
+                            label = { Text(label, fontSize = 11.sp, maxLines = 1) },
                             colors = NavigationBarItemDefaults.colors(indicatorColor = PadOff)
                         )
                     }
@@ -135,10 +145,11 @@ fun BeatPadApp(vm: MainViewModel, actions: Actions) {
                 if (!vm.ready) {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 } else when (tab) {
-                    0 -> PadsScreen(vm) { tab = 2 }
-                    1 -> StepsScreen(vm, actions)
-                    2 -> SampleScreen(vm, actions)
-                    3 -> VoiceScreen(vm, actions)
+                    TAB_PADS -> PadsScreen(vm) { tab = TAB_SAMPLE }
+                    TAB_STEPS -> StepsScreen(vm, actions)
+                    TAB_SYNTH -> SynthScreen(vm)
+                    TAB_SAMPLE -> SampleScreen(vm, actions)
+                    TAB_VOICE -> VoiceScreen(vm, actions)
                     else -> HelpScreen()
                 }
             }

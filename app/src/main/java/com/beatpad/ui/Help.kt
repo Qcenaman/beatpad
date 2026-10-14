@@ -49,7 +49,7 @@ private val sections = listOf(
             "**Tap the pads** to hear the built-in drum kit.",
             "Open **Steps** and tap squares to place drum hits.",
             "Press **▶** at the top to play your beat. Press **■** to stop.",
-            "Add a melody or bass line in the **note track** under the pads.",
+            "Add a melody or bass line in the **note track** under the pads, and shape its sound in the **Synth** tab.",
             "Happy with it? **Steps › Export beat as WAV** saves it as an audio file.",
         ),
         numbered = true
@@ -70,7 +70,7 @@ private val sections = listOf(
             "**▶ / ■** starts and stops everything: drums and note tracks together.",
             "**BPM** is the speed. Use **−** and **+**, or tap the number for a slider and a **TAP** button (tap along with a song to match its speed).",
             "**♩** turns on a metronome click.",
-            "**● REC** records your pad playing: turn it on, press ▶, then tap pads. Each hit lands on the nearest step of the drum pattern.",
+            "**● REC** records what you play: turn it on, press ▶, then tap pads or play the Synth keyboard. Pad hits land on the nearest step of the drum pattern; keyboard notes go into the note track.",
             "Turn REC off to jam without recording.",
         )
     ),
@@ -96,8 +96,37 @@ private val sections = listOf(
             "**Drag a note** to move it to a new time or pitch. **Drag its right end** to make it longer or shorter.",
             "**Drag an empty area** to scroll. **Tap a piano key** to hear that note.",
             "**1, 2, +**: up to 4 tracks, each with its own sound and loop.",
-            "The **♪ sound button** picks the instrument (Bass, Keys, Synth, Pluck, Pad, Bell) or a **pad's sound** played at any pitch. It also sets the loop length (1–8 bars), volume and mute.",
-            "**Expand** hides the pads to give the notes more room. **Pads** brings them back.",
+            "The **♪ sound button** picks a **synth** sound (shaped in the Synth tab), a simple instrument (Bass, Keys, Synth, Pluck, Pad, Bell) or a **pad's sound** played at any pitch. It also sets the loop length (1–8 bars), volume and mute.",
+            "Need more room for notes? **Tap the Pads title** to fold that section, or make the note track taller (see Arrange your screen).",
+        )
+    ),
+    HelpSection(
+        "≈", "Synth (Synth tab)", "Design sounds and play them on a keyboard", Color(0xFF3DD6C6),
+        listOf(
+            "The Synth tab shapes the sound of a **note track**. Pick the track with **1 2 3 4** at the top.",
+            "**Presets ▾** loads a ready-made sound: basses, leads, pads, keys and effects. Start from one, then change it.",
+            "**Play the keyboard.** Use several fingers for chords, or slide along the keys. **◀ Oct / Oct ▶** move it up or down.",
+            "**Oscillators** make the raw tone. Add **Oscillator 2** with a little **Detune** for a fatter sound, and **Sub** for more low end.",
+            "**Filter** controls brightness. Lower **Cutoff** sounds darker; more **Resonance** gives a sharp, squelchy peak. **Env amount** opens the filter on every note.",
+            "**Envelopes**: **Attack** is how fast a note fades in, **Decay** how fast it drops after that, **Sustain** the level while you hold, and **Release** the fade after you let go.",
+            "**LFO** wobbles something over and over: **Pitch** for vibrato, **Filter** for a wah or wobble, **Volume** for tremolo.",
+            "**Voice**: **Mono** plays one note at a time, and **Glide** slides between notes. Great for basses and leads.",
+            "**Effects**: **Drive** adds grit, **Delay** adds echoes in time with the beat, and **Reverb** adds space.",
+            "**Save preset** keeps your sound. **Make pad sound** puts one note of it on a pad.",
+            "**Record what you play**: turn on **REC**, press **▶**, and play the keyboard. Notes go into the track, lined up to the 16th-note grid.",
+        )
+    ),
+    HelpSection(
+        "↕", "Arrange your screen", "Move, resize and fold sections", Color(0xFFFFB020),
+        listOf(
+            "Every screen is made of **sections** (for example Pads and Note track). The bar at the top lists them; **tap a name** to jump there.",
+            "**Tap a section's title** to fold it away or open it again.",
+            "Tap **🔒 Locked** to unlock the layout. It turns into **🔓 Unlocked**.",
+            "When unlocked, **drag the six dots** on a section's title to move it up or down.",
+            "**Drag the bar under a section** to make it taller or shorter.",
+            "**Fold all** closes every section so they're easy to reorder. **Reset** puts the screen back to how it started.",
+            "Tap **🔓 Unlocked** again to lock everything in place, so nothing moves while you play.",
+            "Each screen remembers its own layout.",
         )
     ),
     HelpSection(
