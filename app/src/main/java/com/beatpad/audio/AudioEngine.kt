@@ -139,6 +139,11 @@ class AudioEngine {
         liveEvents.add(intArrayOf(2, -1, -1))
     }
 
+    /** Lets go of every keyboard note on one track (used when the track's sound changes). */
+    fun releaseLive(track: Int) {
+        liveEvents.add(intArrayOf(3, track, -1))
+    }
+
     private fun loop() {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val minBuf = AudioTrack.getMinBufferSize(SR, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
@@ -202,6 +207,13 @@ class AudioEngine {
             when (e[0]) {
                 1 -> liveOn(e[1], e[2])
                 0 -> liveOff(e[1], e[2])
+                3 -> {
+                    for (v in voices) if (v.active && v.live >= 0 && v.bus == e[1]) {
+                        v.live = -1
+                        v.gate = 1
+                    }
+                    if (e[1] in 0 until MAX_BUS) heldCount[e[1]] = 0
+                }
                 else -> {
                     for (v in voices) if (v.active && v.live >= 0) {
                         v.live = -1
@@ -231,11 +243,11 @@ class AudioEngine {
                 }
                 if (clock >= nextFire) fireStep()
             } else if (wasPlaying) {
+                finishRecordings()
                 wasPlaying = false
                 playStep = -1
                 playPos = -1
                 releaseNotes()
-                for (row in recStart) row.fill(-1.0)
             }
             var s = 0f
             for (v in voices) {
@@ -355,13 +367,33 @@ class AudioEngine {
 
     /** Where playback is right now, in steps since play was pressed (with fractions). */
     private fun posNow(): Double {
-        val spb = SR * 60.0 / bpm / 4
-        return lastGlobalFired + (clock - lastFireTime) / spb
+        val span = nextFire - lastFireTime
+        if (span <= 1.0) return lastGlobalFired.toDouble()
+        return lastGlobalFired + (clock - lastFireTime) / span
+    }
+
+    /** Playback stopped while keys were held: keep those notes, with the length played so far. */
+    private fun finishRecordings() {
+        val tracks = noteTracks
+        val end = posNow()
+        for (ti in 0 until MAX_BUS) {
+            val row = recStart[ti]
+            val tr = tracks.getOrNull(ti)
+            for (m in 0 until 128) {
+                val st = row[m]
+                if (st < 0) continue
+                row[m] = -1.0
+                if (tr == null) continue
+                val startStep = Math.round(st)
+                val len = Math.round(end - st).toInt().coerceIn(1, tr.steps)
+                recordedNotes.add(intArrayOf(ti, (startStep % tr.steps).toInt(), len, m))
+            }
+        }
     }
 
     private fun liveOn(ti: Int, midi: Int) {
         val tr = noteTracks.getOrNull(ti) ?: return
-        if (ti !in 0 until MAX_BUS || midi !in 0 until 128) return
+        if (ti !in 0 until MAX_BUS || midi !in NoteTrack.MIN_NOTE..NoteTrack.MAX_NOTE) return
         if (heldCount[ti] < held[ti].size) {
             held[ti][heldCount[ti]] = midi
             heldCount[ti]++
@@ -402,9 +434,14 @@ class AudioEngine {
         if (patch != null && patch.mono && c > 0) {
             val back = h[c - 1]
             for (v in voices) {
-                if (v.active && v.kind == KIND_PATCH && v.bus == ti && v.live == midi) {
-                    v.patch.glideTo(back, false)
-                    v.live = back
+                if (v.active && v.bus == ti && v.live == midi) {
+                    if (v.kind == KIND_PATCH) {
+                        v.patch.glideTo(back, false)
+                        v.live = back
+                    } else {
+                        v.live = -1
+                        v.gate = 1
+                    }
                 }
             }
             return
@@ -469,6 +506,7 @@ class AudioEngine {
                 }
                 if (mv != null) {
                     mv.patch.glideTo(midi, mv.patch.released)
+                    mv.gain = tr.volume
                     mv.gate = gate
                     mv.live = if (live) midi else -1
                     mv.age = clock

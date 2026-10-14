@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -32,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,6 +101,67 @@ fun PanelStack(vm: MainViewModel, screen: String, panels: List<PanelDef>, modifi
         return y
     }
 
+    /** Sections shown on this screen right now, in the saved order. */
+    fun shownOrder(): List<String> = vm.layoutFor(screen, currentIds).order.filter { it in currentIds }
+
+    /** Swaps the dragged section with a neighbour once it has passed that neighbour's middle. */
+    fun reorder(id: String) {
+        val shown = shownOrder()
+        val idx = shown.indexOf(id)
+        if (idx < 0) return
+        val h = (measured[id] ?: 0).toFloat()
+        val center = topOf(id, shown) + dragOffset + h / 2f
+        if (idx < shown.size - 1) {
+            val next = shown[idx + 1]
+            val nh = (measured[next] ?: 0).toFloat()
+            if (center > topOf(next, shown) + nh / 2f) {
+                vm.movePanelNextTo(screen, currentIds, id, next, after = true)
+                dragOffset -= nh + gap
+                return
+            }
+        }
+        if (idx > 0) {
+            val prev = shown[idx - 1]
+            val ph = (measured[prev] ?: 0).toFloat()
+            if (center < topOf(prev, shown) + ph / 2f) {
+                vm.movePanelNextTo(screen, currentIds, id, prev, after = false)
+                dragOffset += ph + gap
+            }
+        }
+    }
+
+    // While a section is held near the top or bottom edge, keep scrolling (and keep it under the finger).
+    LaunchedEffect(dragId) {
+        val id = dragId ?: return@LaunchedEffect
+        while (dragId == id) {
+            withFrameNanos { }
+            if (dragId != id) break
+            val fingerY = padTop + topOf(id, shownOrder()) + dragOffset + grabY - scroll.value
+            val step = when {
+                fingerY < edge -> -16f
+                fingerY > viewH - edge -> 16f
+                else -> 0f
+            }
+            if (step != 0f) {
+                val used = scroll.dispatchRawDelta(step)
+                if (used != 0f) {
+                    dragOffset += used
+                    reorder(id)
+                }
+            }
+        }
+    }
+
+    // Locking in the middle of a drag drops the section where it is.
+    LaunchedEffect(locked) {
+        if (locked) {
+            dragId = null
+            dragOffset = 0f
+        }
+    }
+
+    val shown = layout.order.filter { it in defs }
+
     Column(modifier.fillMaxWidth()) {
         // section bar: jump to a section, lock / unlock the layout
         Row(
@@ -109,7 +172,7 @@ fun PanelStack(vm: MainViewModel, screen: String, panels: List<PanelDef>, modifi
                 Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                for (id in layout.order) {
+                for (id in shown) {
                     val def = defs[id] ?: continue
                     val folded = id in layout.collapsed
                     SmallChip(def.title, PadOff, textColor = if (folded) TextDim else Color.White) {
@@ -118,7 +181,7 @@ fun PanelStack(vm: MainViewModel, screen: String, panels: List<PanelDef>, modifi
                                 vm.setCollapsed(screen, currentIds, id, false)
                                 delay(80)
                             }
-                            val target = padTop + topOf(id, vm.layoutFor(screen, currentIds).order)
+                            val target = padTop + topOf(id, shownOrder())
                             scroll.animateScrollTo(target.toInt())
                         }
                     }
@@ -154,7 +217,7 @@ fun PanelStack(vm: MainViewModel, screen: String, panels: List<PanelDef>, modifi
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            for (id in layout.order) {
+            for (id in shown) {
                 val def = defs[id] ?: continue
                 key(id) {
                     PanelFrame(
@@ -175,35 +238,7 @@ fun PanelStack(vm: MainViewModel, screen: String, panels: List<PanelDef>, modifi
                         },
                         onDrag = { dy ->
                             dragOffset += dy
-                            val ord = vm.layoutFor(screen, currentIds).order
-                            val idx = ord.indexOf(id)
-                            val h = (measured[id] ?: 0).toFloat()
-                            val center = topOf(id, ord) + dragOffset + h / 2f
-                            if (idx in 0 until ord.size - 1) {
-                                val next = ord[idx + 1]
-                                val nh = (measured[next] ?: 0).toFloat()
-                                if (center > topOf(next, ord) + nh / 2f) {
-                                    vm.movePanel(screen, currentIds, id, idx + 1)
-                                    dragOffset -= nh + gap
-                                }
-                            }
-                            if (idx > 0) {
-                                val prev = ord[idx - 1]
-                                val ph = (measured[prev] ?: 0).toFloat()
-                                if (center < topOf(prev, ord) + ph / 2f) {
-                                    vm.movePanel(screen, currentIds, id, idx - 1)
-                                    dragOffset += ph + gap
-                                }
-                            }
-                            // scroll when the dragged section reaches the top or bottom of the screen
-                            val now = vm.layoutFor(screen, currentIds).order
-                            val fingerY = padTop + topOf(id, now) + dragOffset + grabY - scroll.value
-                            val step = when {
-                                fingerY < edge -> -24f
-                                fingerY > viewH - edge -> 24f
-                                else -> 0f
-                            }
-                            if (step != 0f) scroll.dispatchRawDelta(step)
+                            reorder(id)
                         },
                         onDragEnd = {
                             dragId = null
@@ -245,6 +280,13 @@ private fun PanelFrame(
     val resized by rememberUpdatedState(onResized)
     val innerScroll = rememberScrollState()
     val shape = RoundedCornerShape(16.dp)
+
+    LaunchedEffect(locked) {
+        if (locked) {
+            liveH?.let { resized(it) }
+            liveH = null
+        }
+    }
 
     Column(
         Modifier.fillMaxWidth()

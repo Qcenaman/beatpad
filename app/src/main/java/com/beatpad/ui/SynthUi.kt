@@ -610,12 +610,13 @@ fun PianoKeyboard(vm: MainViewModel, color: Color, modifier: Modifier) {
         if (w <= 0 || pos.x < 0f || pos.x >= w || pos.y < 0f || pos.y > h) return null
         val ww = w.toFloat() / whites
         val i = (pos.x / ww).toInt().coerceIn(0, whites - 1)
+        var m = whiteMidi(i)
         if (pos.y < h * 0.6f) {
             val rel = pos.x / ww - i
-            if (rel > 0.7f && i < whites - 1 && blackAfter(i)) return whiteMidi(i) + 1
-            if (rel < 0.3f && i > 0 && blackAfter(i - 1)) return whiteMidi(i - 1) + 1
+            if (rel > 0.7f && i < whites - 1 && blackAfter(i)) m = whiteMidi(i) + 1
+            else if (rel < 0.3f && i > 0 && blackAfter(i - 1)) m = whiteMidi(i - 1) + 1
         }
-        return whiteMidi(i)
+        return if (m in NoteTrack.MIN_NOTE..NoteTrack.MAX_NOTE) m else null
     }
 
     DisposableEffect(track, base) {
@@ -662,8 +663,9 @@ fun PianoKeyboard(vm: MainViewModel, color: Color, modifier: Modifier) {
         for (i in 0 until whites) {
             val m = whiteMidi(i)
             val x = i * ww
+            val playable = m <= NoteTrack.MAX_NOTE
             drawRoundRect(
-                if (m in down) color else Color(0xFFE9E9EF),
+                if (m in down) color else if (playable) Color(0xFFE9E9EF) else Color(0xFF6E6E78),
                 Offset(x + 1.5f, 0f), Size(ww - 3f, h), CornerRadius(8f, 8f)
             )
             if (m % 12 == 0) {
@@ -679,7 +681,7 @@ fun PianoKeyboard(vm: MainViewModel, color: Color, modifier: Modifier) {
             val m = whiteMidi(i) + 1
             val cx = (i + 1) * ww
             drawRoundRect(
-                if (m in down) color else Color(0xFF1C1C22),
+                if (m in down) color else if (m <= NoteTrack.MAX_NOTE) Color(0xFF1C1C22) else Color(0xFF3A3A42),
                 Offset(cx - ww * 0.3f, 0f), Size(ww * 0.6f, h * 0.6f), CornerRadius(6f, 6f)
             )
         }

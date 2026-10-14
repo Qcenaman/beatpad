@@ -143,7 +143,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         while (true) {
             val r = engine.recordedNotes.poll() ?: break
             val t = engine.noteTracks.getOrNull(r[0]) ?: continue
-            t.notes = t.notes + SeqNote(SeqNote.newId(), r[1], r[2], r[3])
+            val start = r[1]
+            val len = r[2]
+            val midi = r[3].coerceIn(NoteTrack.MIN_NOTE, NoteTrack.MAX_NOTE)
+            // recording over the same note again replaces it instead of stacking a copy
+            val same = t.notes.firstOrNull { it.start == start && it.midi == midi }
+            t.notes = if (same != null) t.notes.map { if (it.id == same.id) it.copy(len = len) else it }
+            else t.notes + SeqNote(SeqNote.newId(), start, len, midi)
             recorded = true
         }
         if (recorded) {
@@ -165,8 +171,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** The screen's layout, with any sections that are new (or gone) since it was saved fixed up. */
     fun layoutFor(screen: String, ids: List<String>): PanelLayout {
         val base = layouts[screen] ?: PanelLayout(order = ids)
-        val order = base.order.filter { it in ids } + ids.filter { it !in base.order }
-        return if (order == base.order) base else base.copy(order = order)
+        val missing = ids.filter { it !in base.order }
+        return if (missing.isEmpty()) base else base.copy(order = base.order + missing)
     }
 
     private fun putLayout(screen: String, l: PanelLayout) {
@@ -174,13 +180,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         storage.saveLayout(screen, l.toJson())
     }
 
-    fun movePanel(screen: String, ids: List<String>, id: String, to: Int) {
+    /** Moves a section to just before or after another one. */
+    fun movePanelNextTo(screen: String, ids: List<String>, id: String, neighbor: String, after: Boolean) {
         val l = layoutFor(screen, ids)
         val ord = l.order.toMutableList()
-        val from = ord.indexOf(id)
-        if (from < 0) return
-        ord.removeAt(from)
-        ord.add(to.coerceIn(0, ord.size), id)
+        if (!ord.remove(id)) return
+        val n = ord.indexOf(neighbor)
+        if (n < 0) return
+        ord.add(if (after) n + 1 else n, id)
         putLayout(screen, l.copy(order = ord))
     }
 
@@ -196,7 +203,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun collapseAll(screen: String, ids: List<String>, collapsed: Boolean) {
         val l = layoutFor(screen, ids)
-        putLayout(screen, l.copy(collapsed = if (collapsed) ids.toSet() else emptySet()))
+        putLayout(screen, l.copy(collapsed = if (collapsed) l.collapsed + ids else l.collapsed - ids.toSet()))
     }
 
     fun resetLayout(screen: String) {
@@ -258,6 +265,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setTrackInstrument(inst: Instrument?) {
+        engine.releaseLive(selectedTrack)
         track.patch = null
         track.instrument = inst
         noteRev++
@@ -265,6 +273,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setTrackPad(p: Int) {
+        engine.releaseLive(selectedTrack)
         track.padSource = p
         track.patch = null
         track.instrument = null
@@ -312,6 +321,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- synth ----------
     /** Makes the selected note track a synth with this sound (a copy, so edits don't change the preset). */
     fun loadPreset(p: SynthPatch) {
+        engine.releaseLive(selectedTrack)
         track.patch = p.copy()
         synthRev++
         noteRev++
