@@ -21,8 +21,11 @@ Every push to `main` builds a new APK automatically (see the Actions tab).
 - **Per-pad** volume, pitch (±24 semitones) and choke groups
 - **Beatbox → Drums**: detects kicks, snares, hats and open hats in your beatbox, guesses your tempo, and writes the pattern; or keeps your exact timing as a loop; or uses your own voice sounds
 - **Hum → Instrument**: tracks the pitch of your humming and replays it as Bass, Keys, Synth, Pluck, Pad or Bell
-- **Export** 1–8 bars as a WAV file
-- Your kit and pattern are saved automatically
+- **Note track** under the pads (v1.1): a piano roll where you tap to add notes, drag to move them, drag the right end to change length, and pick lengths from 1/16 to 1 bar. Up to 4 tracks, each played by an instrument (Bass, Keys, Synth, Pluck, Pad, Bell) or by a pad's sample at any pitch, with 1–8 bar loops, volume and mute
+- **Hum → note track**: send a hummed melody to a note track and fix it note by note
+- **Help tab**: simple, sectioned guide to everything in the app
+- **Export** 1–8 bars (drums + note tracks) as a WAV file
+- Your kit, pattern and note tracks are saved automatically
 
 ## Build it yourself
 Open the folder in Android Studio and press Run, or run `gradle assembleRelease` with Gradle 8.7 and JDK 17.

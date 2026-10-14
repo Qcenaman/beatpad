@@ -25,8 +25,10 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -92,6 +94,16 @@ fun BeatPadApp(vm: MainViewModel, actions: Actions) {
                 vm.poll()
             }
         }
+        LaunchedEffect(vm.ready) {
+            if (vm.ready && vm.consumeHelpIntro()) {
+                val r = snack.showSnackbar(
+                    "New to BeatPad? The Help tab shows how everything works.",
+                    actionLabel = "Open Help",
+                    duration = SnackbarDuration.Long
+                )
+                if (r == SnackbarResult.ActionPerformed) tab = 4
+            }
+        }
         LaunchedEffect(vm.message) {
             val m = vm.message
             if (m != null) {
@@ -106,7 +118,7 @@ fun BeatPadApp(vm: MainViewModel, actions: Actions) {
             topBar = { TransportBar(vm) },
             bottomBar = {
                 NavigationBar(containerColor = Panel) {
-                    val items = listOf("Pads" to "▦", "Steps" to "☷", "Sample" to "∿", "Voice" to "◉")
+                    val items = listOf("Pads" to "▦", "Steps" to "☷", "Sample" to "∿", "Voice" to "◉", "Help" to "?")
                     items.forEachIndexed { i, (label, glyph) ->
                         NavigationBarItem(
                             selected = tab == i,
@@ -126,7 +138,8 @@ fun BeatPadApp(vm: MainViewModel, actions: Actions) {
                     0 -> PadsScreen(vm) { tab = 2 }
                     1 -> StepsScreen(vm, actions)
                     2 -> SampleScreen(vm, actions)
-                    else -> VoiceScreen(vm, actions)
+                    3 -> VoiceScreen(vm, actions)
+                    else -> HelpScreen()
                 }
             }
         }

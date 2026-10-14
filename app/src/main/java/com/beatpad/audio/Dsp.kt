@@ -49,6 +49,11 @@ class Biquad {
         return this
     }
 
+    fun reset() {
+        z1 = 0f
+        z2 = 0f
+    }
+
     fun process(x: Float): Float {
         val y = b0 * x + z1
         z1 = b1 * x - a1 * y + z2

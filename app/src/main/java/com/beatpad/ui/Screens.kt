@@ -52,6 +52,7 @@ import com.beatpad.Actions
 import com.beatpad.MainViewModel
 import com.beatpad.RecTarget
 import com.beatpad.audio.AudioEngine
+import com.beatpad.audio.Instrument
 import com.beatpad.audio.RecSource
 import com.beatpad.audio.SR
 import com.beatpad.voice.Beatbox
@@ -67,32 +68,29 @@ fun PadsScreen(vm: MainViewModel, onEdit: () -> Unit) {
     val rev = vm.padRev
     val step = vm.playStep
     val patRev = vm.patternRev
-    Column(Modifier.fillMaxSize().padding(10.dp)) {
-        // MPC layout: pad 1 is bottom-left
-        for (r in 0 until 4) {
-            Row(Modifier.fillMaxWidth()) {
-                for (c in 0 until 4) {
-                    val i = (3 - r) * 4 + c
-                    val seqHit = step >= 0 && vm.engine.pattern[i][step]
-                    PadButton(vm, i, seqHit, Modifier.weight(1f).aspectRatio(1f))
+    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp)) {
+        if (!vm.rollExpanded) {
+            // MPC layout: pad 1 is bottom-left
+            for (r in 0 until 4) {
+                Row(Modifier.fillMaxWidth()) {
+                    for (c in 0 until 4) {
+                        val i = (3 - r) * 4 + c
+                        val seqHit = step >= 0 && vm.engine.pattern[i][step]
+                        PadButton(vm, i, seqHit, Modifier.weight(1f).aspectRatio(1.45f))
+                    }
                 }
             }
-        }
-        Spacer(Modifier.height(12.dp))
-        val p = vm.engine.pads[vm.selectedPad]
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Pad ${vm.selectedPad + 1}", color = TextDim, fontSize = 12.sp)
-                Text(p.name, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            val p = vm.engine.pads[vm.selectedPad]
+            Row(Modifier.fillMaxWidth().padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (vm.recArm) "REC on: press ▶ and tap pads" else "Pad ${vm.selectedPad + 1} · ${p.name}",
+                    color = if (vm.recArm) RecRed else Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onEdit) { Text("Change sound ›") }
             }
-            OutlinedButton(onClick = onEdit) { Text("Change sound ›") }
         }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            if (vm.recArm) "REC is on: press ▶ and tap pads to record them into the pattern."
-            else "Tap pads to play. Turn on REC and press ▶ to record a pattern live.",
-            color = TextDim, fontSize = 13.sp
-        )
+        NoteTrackPanel(vm, Modifier.weight(1f).fillMaxWidth())
         if (rev < 0 || patRev < 0) Text("")
     }
 }
@@ -108,7 +106,7 @@ fun PadButton(vm: MainViewModel, i: Int, seqHit: Boolean, modifier: Modifier) {
         else -> PadOff
     }
     Box(
-        modifier.padding(4.dp).clip(RoundedCornerShape(12.dp)).background(bg)
+        modifier.padding(3.dp).clip(RoundedCornerShape(12.dp)).background(bg)
             .border(2.dp, if (selected) base else Color.Transparent, RoundedCornerShape(12.dp))
             .pointerInput(i) {
                 awaitEachGesture {
@@ -434,7 +432,7 @@ fun VoiceScreen(vm: MainViewModel, actions: Actions) {
                 Spacer(Modifier.height(10.dp))
                 Text("Instrument", color = Color.White, fontSize = 14.sp)
                 Spacer(Modifier.height(6.dp))
-                val insts = Melody.Instrument.values().toList()
+                val insts = Instrument.values().toList()
                 for (row in insts.chunked(3)) {
                     Row(Modifier.padding(vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (inst in row) {
@@ -458,11 +456,19 @@ fun VoiceScreen(vm: MainViewModel, actions: Actions) {
                 Spacer(Modifier.height(6.dp))
                 OutlinedButton(onClick = { vm.previewMelody() }, modifier = Modifier.fillMaxWidth()) { Text("▶ Preview") }
                 Spacer(Modifier.height(10.dp))
-                Text("Put it on pad:", color = TextDim, fontSize = 13.sp)
+                Button(onClick = { vm.melodyToTrack() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Put on note track ${vm.selectedTrack + 1} (editable)")
+                }
+                Text(
+                    "The notes go into the note track under the pads, where you can fix pitches and lengths.",
+                    color = TextDim, fontSize = 12.sp
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("Or save it as one sound on pad:", color = TextDim, fontSize = 13.sp)
                 Spacer(Modifier.height(6.dp))
                 PadPicker(vm.melPad) { vm.melPad = it }
                 Spacer(Modifier.height(6.dp))
-                Button(onClick = { vm.melodyToPad() }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { vm.melodyToPad() }, modifier = Modifier.fillMaxWidth()) {
                     Text("Save to pad ${vm.melPad + 1}")
                 }
             }

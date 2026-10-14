@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
@@ -15,10 +16,13 @@ import com.beatpad.audio.AudioDecoder
 import com.beatpad.audio.AudioEngine
 import com.beatpad.audio.CaptureService
 import com.beatpad.audio.DrumSynth
+import com.beatpad.audio.Instrument
+import com.beatpad.audio.NoteTrack
 import com.beatpad.audio.RecSource
 import com.beatpad.audio.RecordingHub
 import com.beatpad.audio.SR
 import com.beatpad.audio.SampleOps
+import com.beatpad.audio.SeqNote
 import com.beatpad.audio.Wav
 import com.beatpad.voice.Beatbox
 import com.beatpad.voice.Melody
@@ -50,6 +54,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var busy by mutableStateOf<String?>(null)
     var speakerFallbackPad by mutableStateOf<Int?>(null)
 
+    // Note tracks
+    var noteRev by mutableIntStateOf(0)
+    var selectedTrack by mutableIntStateOf(0)
+    var selectedNoteId by mutableStateOf<Int?>(null)
+    var noteLen by mutableIntStateOf(4)
+    var playPos by mutableLongStateOf(-1L)
+    var rollExpanded by mutableStateOf(false)
+
     var recTarget: RecTarget? = null
     private var lastLiveRev = 0
     private val undo = arrayOfNulls<FloatArray>(16)
@@ -64,7 +76,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // Melody
     var melNotes by mutableStateOf<List<Melody.Note>>(emptyList())
-    var melInstrument by mutableStateOf(Melody.Instrument.KEYS)
+    var melInstrument by mutableStateOf(Instrument.KEYS)
     var melOctave by mutableIntStateOf(0)
     var melQuantize by mutableStateOf(true)
     var melPad by mutableIntStateOf(15)
@@ -84,6 +96,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 swing = engine.swing
                 padRev++
                 patternRev++
+                noteRev++
                 ready = true
             }
         }
@@ -101,6 +114,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun poll() {
         val s = engine.playStep
         if (s != playStep) playStep = s
+        val pp = engine.playPos
+        if (pp != playPos) playPos = pp
         val lr = engine.liveRev
         if (lr != lastLiveRev) {
             lastLiveRev = lr
@@ -110,6 +125,151 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toast(msg: String) {
         message = msg
+    }
+
+    /** True the first time the app is opened, so the UI can point at the Help tab once. */
+    fun consumeHelpIntro(): Boolean {
+        if (storage.seenHelp) return false
+        storage.seenHelp = true
+        return true
+    }
+
+    // ---------- note tracks ----------
+    val track: NoteTrack
+        get() {
+            val t = engine.noteTracks
+            return t.getOrElse(selectedTrack) { t[0] }
+        }
+
+    val selectedNote: SeqNote?
+        get() {
+            val id = selectedNoteId ?: return null
+            return track.notes.firstOrNull { it.id == id }
+        }
+
+    fun selectTrack(i: Int) {
+        if (i !in engine.noteTracks.indices) return
+        selectedTrack = i
+        selectedNoteId = null
+        noteRev++
+    }
+
+    fun addTrack() {
+        val list = engine.noteTracks
+        if (list.size >= Storage.MAX_TRACKS) return
+        val t = NoteTrack()
+        val used = list.mapNotNull { it.instrument }.toSet()
+        t.instrument = listOf(Instrument.BASS, Instrument.LEAD, Instrument.PAD, Instrument.PLUCK, Instrument.BELL, Instrument.KEYS)
+            .firstOrNull { it !in used } ?: Instrument.KEYS
+        t.bars = list.maxOf { it.bars }
+        engine.noteTracks = list + t
+        selectTrack(engine.noteTracks.size - 1)
+        saveState()
+    }
+
+    fun deleteTrack(i: Int) {
+        val list = engine.noteTracks
+        if (list.size <= 1 || i !in list.indices) return
+        engine.noteTracks = list.filterIndexed { k, _ -> k != i }
+        selectTrack((selectedTrack.coerceAtMost(engine.noteTracks.size - 1)))
+        saveState()
+    }
+
+    fun setTrackInstrument(inst: Instrument?) {
+        track.instrument = inst
+        noteRev++
+        saveState()
+    }
+
+    fun setTrackPad(p: Int) {
+        track.padSource = p
+        track.instrument = null
+        noteRev++
+        saveState()
+    }
+
+    fun setTrackVolume(v: Float) {
+        track.volume = v
+        noteRev++
+    }
+
+    fun setTrackBars(b: Int) {
+        track.bars = b
+        noteRev++
+        saveState()
+    }
+
+    fun toggleTrackMute() {
+        track.muted = !track.muted
+        noteRev++
+        saveState()
+    }
+
+    fun clearTrack() {
+        track.notes = emptyList()
+        selectedNoteId = null
+        noteRev++
+        saveState()
+    }
+
+    fun previewNote(midi: Int) {
+        engine.previewNote(selectedTrack, midi)
+    }
+
+    fun addNote(start: Int, midi: Int) {
+        val t = track
+        val len = noteLen.coerceAtMost(t.steps - start).coerceAtLeast(1)
+        val n = SeqNote(SeqNote.newId(), start, len, midi)
+        t.notes = t.notes + n
+        selectedNoteId = n.id
+        noteRev++
+        previewNote(midi)
+        saveState()
+    }
+
+    /** Replaces a note's position, length or pitch (used live while dragging). */
+    fun updateNote(id: Int, start: Int, len: Int, midi: Int) {
+        val t = track
+        val old = t.notes.firstOrNull { it.id == id } ?: return
+        val n = old.copy(
+            start = start.coerceIn(0, t.steps - 1),
+            len = len.coerceIn(1, t.steps),
+            midi = midi.coerceIn(NoteTrack.MIN_NOTE, NoteTrack.MAX_NOTE)
+        )
+        if (n == old) return
+        t.notes = t.notes.map { if (it.id == id) n else it }
+        noteRev++
+    }
+
+    fun selectNote(id: Int?) {
+        selectedNoteId = id
+        noteRev++
+    }
+
+    fun deleteSelectedNote() {
+        val id = selectedNoteId ?: return
+        track.notes = track.notes.filter { it.id != id }
+        selectedNoteId = null
+        noteRev++
+        saveState()
+    }
+
+    fun nudgeSelected(dStep: Int, dPitch: Int) {
+        val n = selectedNote ?: return
+        updateNote(n.id, n.start + dStep, n.len, n.midi + dPitch)
+        if (dPitch != 0) previewNote((n.midi + dPitch).coerceIn(NoteTrack.MIN_NOTE, NoteTrack.MAX_NOTE))
+        saveState()
+    }
+
+    /** Sets the length for new notes, and for the selected note if there is one. */
+    fun chooseNoteLen(len: Int) {
+        noteLen = len
+        val n = selectedNote
+        if (n != null) {
+            updateNote(n.id, n.start, len, n.midi)
+            saveState()
+        }
+        noteRev++
     }
 
     // ---------- transport ----------
@@ -392,6 +552,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val d = renderMelody()
             engine.playOneShot(d)
         }
+    }
+
+    fun melodyToTrack() {
+        val notes = melNotes
+        if (notes.isEmpty()) return
+        val s = SR * 15.0 / engine.bpm
+        val t0 = notes[0].start
+        val seq = notes.map {
+            SeqNote(
+                SeqNote.newId(),
+                Math.round((it.start - t0) / s).toInt(),
+                Math.round(it.len / s).toInt().coerceAtLeast(1),
+                (it.midi + 12 * melOctave).coerceIn(NoteTrack.MIN_NOTE, NoteTrack.MAX_NOTE)
+            )
+        }
+        val needed = seq.maxOf { it.start + 1 }
+        val bars = listOf(1, 2, 4, 8).firstOrNull { it * 16 >= needed } ?: 8
+        val t = track
+        t.instrument = melInstrument
+        t.bars = bars
+        t.notes = seq.filter { it.start < bars * 16 }
+        selectedNoteId = null
+        noteRev++
+        saveState()
+        toast("Melody is on note track ${selectedTrack + 1}. Edit it under the pads.")
     }
 
     fun melodyToPad() {
